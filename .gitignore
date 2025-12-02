@@ -8,7 +8,7 @@ env/
 data/
 *.png
 *.csv
-*.sql
+csv_global.sql
 
 # Python cache files
 __pycache__/
