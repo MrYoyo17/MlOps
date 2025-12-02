@@ -8,8 +8,12 @@ from PIL import Image
 from flask import Flask, request, jsonify
 import mlflow.pytorch
 import mlflow.tracking
+from prometheus_flask_exporter import PrometheusMetrics # <--- AJOUT
+
 
 app = Flask(__name__)
+metrics = PrometheusMetrics(app)
+metrics.info('app_info', 'Face Filter API', version='1.0.0')
 
 # === 1. MAPPINGS (Identiques au script batch) ===
 

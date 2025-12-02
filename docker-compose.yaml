@@ -51,16 +51,58 @@ services:
   face-filter-app:
     build: ./app
     ports:
-      - "5002:5002"
+      - "5002:5001"
     environment:
       # L'app doit savoir où est MLflow pour télécharger le modèle
       - MLFLOW_TRACKING_URI=http://mlflow:5000
       - FLASK_DEBUG=1
+      - DEBUG_METRICS=1
     volumes:
       - ./ml-artifacts:/mlartifacts
       - ./app:/app
     depends_on:
       - mlflow
 
+  # 1. Prometheus (Base de données temporelle)
+  prometheus:
+    image: prom/prometheus:latest
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+    ports:
+      - "9090:9090"
+    depends_on:
+      - face-filter-app
+
+  # 2. Grafana (Tableaux de bord)
+  grafana:
+    image: grafana/grafana:latest
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin # Mot de passe par défaut
+    depends_on:
+      - prometheus
+    volumes:
+      - grafana_data:/var/lib/grafana
+
+  # 3. cAdvisor (Moniteur de conteneurs Docker)
+  # Note : Sur Mac M1/M2, l'image google/cadvisor plante souvent.
+  # On utilise une version compatible ARM si besoin, sinon l'officielle.
+  cadvisor:
+    image: gcr.io/cadvisor/cadvisor:v0.47.2 # Version plus récente et stable
+    container_name: cadvisor
+    ports:
+      - "8081:8080" # On map sur 8081 car 8080 est pris par Airflow
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:ro
+      - /sys:/sys:ro
+      - /var/lib/docker/:/var/lib/docker:ro
+    devices:
+      - /dev/kmsg
+
 volumes:
   postgres_data:
+  grafana_data:

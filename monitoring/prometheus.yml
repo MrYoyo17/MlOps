@@ -1,0 +1,19 @@
+global:
+  scrape_interval: 5s # Scanne les métriques toutes les 5 secondes
+
+scrape_configs:
+  # 1. Prometheus se surveille lui-même
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']
+
+  # 2. Surveiller l'API Flask (Le plus important !)
+  - job_name: 'face-filter-app'
+    scrape_interval: 5s
+    static_configs:
+      - targets: ['face-filter-app:5001'] # Nom du service docker + port interne
+
+  # 3. Surveiller les conteneurs Docker via cAdvisor (Optionnel mais recommandé)
+  - job_name: 'cadvisor'
+    static_configs:
+      - targets: ['cadvisor:8080']
