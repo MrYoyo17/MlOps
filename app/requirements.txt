@@ -4,4 +4,5 @@ torch
 torchvision
 pillow
 numpy
+flask-cors
 prometheus-flask-exporter

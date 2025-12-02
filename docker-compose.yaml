@@ -60,8 +60,20 @@ services:
     volumes:
       - ./ml-artifacts:/mlartifacts
       - ./app:/app
+      - ./data:/data
     depends_on:
       - mlflow
+
+  front:
+    build: ./front
+    ports:
+      - "5173:5173"
+    volumes:
+      - ./front:/app
+      - /app/node_modules
+    command: npm run dev -- --host
+    environment:
+      - VITE_API_URL=http://localhost:5002
 
   # 1. Prometheus (Base de données temporelle)
   prometheus:
