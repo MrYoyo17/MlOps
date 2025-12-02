@@ -1,0 +1,27 @@
+services:
+  face-filter-app:
+    image: mlops-face-filter-app:latest
+    build:
+      context: .
+      dockerfile: app/Dockerfile
+    ports:
+      - "5002:5001"
+    environment:
+      - FLASK_DEBUG=1
+      - DEBUG_METRICS=1
+    volumes:
+      - ./ml-artifacts:/mlartifacts
+      - ./app:/app
+      - ./data:/data
+
+  front:
+    image: mlops-front:latest
+    build: ./front
+    ports:
+      - "5173:5173"
+    volumes:
+      - ./front:/app
+      - /app/node_modules
+    command: npm run dev -- --host
+    environment:
+      - VITE_API_URL=http://localhost:5002

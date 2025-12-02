@@ -11,10 +11,11 @@ RUN apt-get update && \
 
 WORKDIR /app
 
-COPY requirements.txt .
+COPY app/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY app.py .
+COPY app/app.py .
+COPY data/predictions /app/predictions
 
 ENV MLFLOW_TRACKING_URI=http://mlflow:5000
 EXPOSE 5001
