@@ -8,7 +8,7 @@ from PIL import Image
 from flask import Flask, request, jsonify
 import mlflow.pytorch
 import mlflow.tracking
-from prometheus_flask_exporter import PrometheusMetrics # <--- AJOUT
+from prometheus_flask_exporter import PrometheusMetrics
 
 
 app = Flask(__name__)

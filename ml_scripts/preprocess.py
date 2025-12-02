@@ -1,97 +1,117 @@
-#!/usr/bin/env python3
 import os
 import cv2
 import numpy as np
 from tqdm import tqdm
+from pathlib import Path
 
-DEFAULT_BASE_DIR = os.path.join(os.path.dirname(__file__), "../data") # Relatif au script
-BASE_DATA_DIR = os.environ.get("BASE_DATA_DIR", DEFAULT_BASE_DIR)
+# === GESTION INTELLIGENTE DES CHEMINS ===
+DEFAULT_BASE_DIR = Path(__file__).resolve().parent.parent / "data"
+BASE_DATA_DIR = Path(os.environ.get("BASE_DATA_DIR", DEFAULT_BASE_DIR))
+
 INPUT_DIR = BASE_DATA_DIR
-OUTPUT_DIR = os.path.join(BASE_DATA_DIR, 'dataset_prepro')
-MAX_FILES = 0  # 0 = tous
-TAILLE_CIBLE = (64, 64) # (largeur, hauteur)
-
-# === Fonctions ===
+OUTPUT_DIR = BASE_DATA_DIR / 'dataset_prepro'
+TAILLE_CIBLE = (64, 64)
 
 def gather_image_files(input_dir, exts=('.png', '.jpg', '.jpeg')):
+    input_dir = Path(input_dir)
     files = []
-    for root, _, filenames in os.walk(input_dir):
-        for f in filenames:
-            if f.lower().endswith(exts):
-                files.append(os.path.join(root, f))
+    if not input_dir.exists():
+        print(f"ATTENTION: Le dossier {input_dir} n'existe pas.")
+        return []
+        
+    for f in input_dir.rglob("*"):
+        if f.suffix.lower() in exts:
+            files.append(f)
     return files
 
-def process_image(path):
+def process_single_image(path):
     """
-    Fonction qui combine load, preprocess et finalize pour une image donnée.
-    Retourne True si succès, False sinon.
+    Retourne :
+     1 : Succès
+     0 : Échec
+    -1 : Skipped
     """
+    # 1. On s'assure que tout est bien un objet Path
+    path_obj = Path(path)
+    out_name = path_obj.name
     
-    # 1. LOAD
-    img = cv2.imread(path)
+    # Sécurité : on force OUTPUT_DIR en Path aussi
+    out_path = Path(OUTPUT_DIR) / out_name
+
+    # --- VÉRIFICATION D'EXISTENCE (CORRECTION ICI) ---
+    if out_path.exists():
+        return -1
+
+    # --- LOAD ---
+    # cv2 a besoin d'une string, pas d'un Path
+    img = cv2.imread(str(path_obj))
     if img is None:
-        return False
+        return 0
 
-    # 2. PREPROCESS
-    # Convertir en niveaux de gris
-    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    # --- PREPROCESS ---
+    try:
+        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+        _, thresh = cv2.threshold(gray, 240, 255, cv2.THRESH_BINARY_INV)
+        contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
-    # Seuillage (Fond blanc -> binaire inversé pour avoir l'objet en blanc)
-    _, thresh = cv2.threshold(gray, 240, 255, cv2.THRESH_BINARY_INV)
+        img_final = None
 
-    # Trouver les contours
-    contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        if len(contours) == 0:
+            return 0
+        else:
+            largest_contour = max(contours, key=cv2.contourArea)
+            x, y, w, h = cv2.boundingRect(largest_contour)
+            img_cropped = img[y:y+h, x:x+w]
 
-    img_final = None
+            if img_cropped.size == 0:
+                return 0
 
-    if len(contours) == 0:
-        return False
-    else:
-        # Trouver le plus grand contour
-        largest_contour = max(contours, key=cv2.contourArea)
+            img_final = cv2.resize(img_cropped, TAILLE_CIBLE, interpolation=cv2.INTER_AREA)
 
-        # Obtenir la boîte englobante
-        x, y, w, h = cv2.boundingRect(largest_contour)
-
-        # Rogner l'image
-        img_cropped = img[y:y+h, x:x+w]
-
-        # Sécurité : vérifier si le crop n'est pas vide
-        if img_cropped.size == 0:
-            return False
-
-        # Redimensionner en 64x64 (sans proportionnalité)
-        img_final = cv2.resize(img_cropped, TAILLE_CIBLE, interpolation=cv2.INTER_AREA)
-
-    # 3. FINALIZE (Sauvegarde)
-    if img_final is not None:
-        # Créer le dossier de sortie s'il n'existe pas
-        os.makedirs(OUTPUT_DIR, exist_ok=True)
-        
-        # Construire le nom de fichier de sortie
-        out_name = os.path.basename(path)
-        out_path = os.path.join(OUTPUT_DIR, out_name)
-        
-        cv2.imwrite(out_path, img_final)
-        return True
+        # --- FINALIZE ---
+        if img_final is not None:
+            # On s'assure que le dossier parent existe
+            out_path.parent.mkdir(parents=True, exist_ok=True)
+            
+            cv2.imwrite(str(out_path), img_final)
+            return 1
+            
+    except Exception as e:
+        print(f"Erreur sur {out_name}: {e}")
+        return 0
     
-    return False
+    return 0
 
 def run_preprocess():
-    # Cette fonction sera appelée par Airflow
     print(f"--- Démarrage Pré-traitement ---")
     print(f"Source : {INPUT_DIR}")
     print(f"Destination : {OUTPUT_DIR}")
     
     files = gather_image_files(INPUT_DIR)
-    success_count = 0
-    # On évite tqdm dans Airflow pour ne pas pourrir les logs, on peut mettre une condition simple
-    iterator = tqdm(files) if "airflow" not in os.environ.get("USER", "") else files
+    print(f"{len(files)} images trouvées dans le dossier source.")
+
+    count_success = 0
+    count_skipped = 0
+    count_error = 0
+    
+    # Désactiver tqdm dans Airflow
+    disable_tqdm = os.environ.get("AIRFLOW_CTX_DAG_ID") is not None
+    iterator = tqdm(files, desc="Traitement", unit="img", disable=disable_tqdm)
     
     for f in iterator:
-        if process_image(f):
-            success_count += 1
-    print(f"Terminé : {success_count} images traitées.")
+        res = process_single_image(f)
+        if res == 1:
+            count_success += 1
+        elif res == -1:
+            count_skipped += 1
+        else:
+            count_error += 1
+            
+    print(f"\n--- Bilan ---")
+    print(f"✅ Traitées  : {count_success}")
+    print(f"⏩ Ignorées  : {count_skipped} (Déjà existantes)")
+    print(f"❌ Erreurs   : {count_error}")
+    print(f"----------------")
 
 if __name__ == "__main__":
     run_preprocess()
