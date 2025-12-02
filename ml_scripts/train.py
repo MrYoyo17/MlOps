@@ -32,11 +32,20 @@ mlflow.set_experiment("Image_Filter_Project")
 
 class DatasetFaces(Dataset):   
     def __init__(self, csv_file, img_dir, transform=None, file_extension='.jpg'):
-        self.annotations = pd.read_csv(csv_file, index_col='filename')
-        self.img_names = self.annotations.index.tolist()
         self.img_dir = img_dir
         self.transform = transform
         self.file_extension = file_extension
+        
+        # SÉCURITÉ : On vérifie si le fichier existe avant de lire
+        if not os.path.exists(csv_file):
+            # Si le fichier n'existe pas (scan Airflow), on crée un DataFrame vide
+            # pour éviter le crash, mais l'entraînement échouera proprement plus tard
+            print(f"⚠️ ATTENTION: {csv_file} introuvable (Normal au 1er lancement)")
+            self.annotations = pd.DataFrame()
+            self.img_names = []
+        else:
+            self.annotations = pd.read_csv(csv_file, index_col='filename')
+            self.img_names = self.annotations.index.tolist()
 
     def __len__(self):
         return len(self.img_names)
