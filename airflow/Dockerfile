@@ -25,4 +25,5 @@ RUN pip install --no-cache-dir \
     numpy \
     psycopg2-binary \
     opencv-python-headless \
-    tqdm
+    tqdm \
+    evidently==0.5.0
