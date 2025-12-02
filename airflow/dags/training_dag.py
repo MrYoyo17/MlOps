@@ -9,6 +9,8 @@ sys.path.append("/opt/airflow/ml_scripts")
 
 from preprocess import run_preprocess
 from train import run_training
+from annotate import run_aggregation
+from predict_batch import run_prediction
 
 default_args = {
     'owner': 'airflow',
@@ -16,8 +18,22 @@ default_args = {
     'retries': 1,
 }
 
-with DAG('mlops_face_filter', default_args=default_args, schedule_interval=None, catchup=False) as dag:
+# Fonction wrapper pour récupérer le paramètre depuis l'interface Airflow
+def prediction_wrapper(**context):
+    # On récupère la configuration passée lors du trigger
+    # Si rien n'est passé, on utilise 's8' par défaut
+    conf = context['dag_run'].conf or {}
+    prefix_param = conf.get('prefix', 's8')
     
+    print(f"Lancement du DAG avec le préfixe : {prefix_param}")
+    run_prediction(prefix=prefix_param)
+
+with DAG('mlops_face_filter', default_args=default_args, schedule_interval=None, catchup=False) as dag:
+    t_annotate = PythonOperator(
+        task_id='annotate',
+        python_callable=run_aggregation
+    )
+
     t_preprocess = PythonOperator(
         task_id='preprocess',
         python_callable=run_preprocess
@@ -28,7 +44,7 @@ with DAG('mlops_face_filter', default_args=default_args, schedule_interval=None,
         python_callable=run_training
     )
 
-    t_preprocess >> t_train
+    [t_annotate, t_preprocess] >> t_train
 
 with DAG('mlops_face_filter_train', default_args=default_args, schedule_interval=None, catchup=False) as dag:
     
@@ -36,3 +52,18 @@ with DAG('mlops_face_filter_train', default_args=default_args, schedule_interval
         task_id='train',
         python_callable=run_training
     )
+
+with DAG('on_demand_prediction', default_args=default_args, schedule_interval=None, catchup=False) as dag:
+
+    t_preprocess = PythonOperator(
+        task_id='preprocess',
+        python_callable=run_preprocess
+    )
+
+    t_predict = PythonOperator(
+        task_id='batch_predict',
+        python_callable=prediction_wrapper,
+        provide_context=True # Important pour accéder à 'dag_run'
+    )
+
+    t_preprocess >> t_predict
