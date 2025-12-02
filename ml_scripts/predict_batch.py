@@ -8,31 +8,34 @@ import pandas as pd
 import mlflow.pytorch
 import argparse
 from pathlib import Path
-from urllib.parse import urlparse
 
 # === CONFIGURATION ===
-
-# 1. Définition de la racine du projet (Compatible Mac et Docker)
-# On remonte de 2 crans depuis ce script (ml_scripts/predict_batch.py -> racine)
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
-
-# 2. Chemins des données
-# Si la variable d'env existe (Docker), on l'utilise. Sinon on construit le chemin local.
 BASE_DATA_DIR = Path(os.environ.get("BASE_DATA_DIR", PROJECT_ROOT / "data"))
 IMG_DIR = BASE_DATA_DIR / "dataset_prepro"
 OUTPUT_DIR = BASE_DATA_DIR / "predictions"
-
-# 3. Chemin des artefacts (C'est là que se joue la correction)
 LOCAL_ARTIFACTS_DIR = PROJECT_ROOT / "ml-artifacts"
 
-# 4. MLflow URI
+# MLflow
 DEFAULT_MLFLOW_URI = "http://localhost:5050"
 MLFLOW_URI = os.environ.get("MLFLOW_TRACKING_URI", DEFAULT_MLFLOW_URI)
 mlflow.set_tracking_uri(MLFLOW_URI)
 
-# Mappings
-HAIR_LENGTH_MAP = {0: "Court", 1: "Mi-long", 2: "Long"}
-HAIR_COLOR_MAP = {0: "Noir", 1: "Brun", 2: "Blond", 3: "Roux", 4: "Gris/Autre"}
+# === MAPPINGS DE SORTIE (Conversion Modèle -> Format demandé) ===
+
+# Votre modèle (basé sur aggregate.py) sort : 0=Long, 1=Court, 2=Chauve
+# Vous voulez : 0=Chauve, 1=Court, 2=Long
+MAP_TAILLE_TO_USER = {
+    0: 2, # Modèle Long -> User Long (2)
+    1: 1, # Modèle Court -> User Court (1)
+    2: 0  # Modèle Chauve -> User Chauve (0)
+}
+
+# Votre modèle sort : 0=Blond, 1=Chatain, 2=Roux, 3=Brun, 4=Gris
+# Vous voulez : Idem. Pas de changement nécessaire.
+MAP_COULEUR_TO_USER = {
+    0: 0, 1: 1, 2: 2, 3: 3, 4: 4
+}
 
 # === DÉFINITION DU MODÈLE ===
 class CNN(nn.Module):
@@ -70,42 +73,28 @@ class CNN(nn.Module):
 sys.modules['train'] = sys.modules[__name__]
 sys.modules['trainning'] = sys.modules[__name__]
 
-# === FONCTION MAGIQUE DE CORRECTION DE CHEMIN ===
+# === FONCTIONS UTILITAIRES ===
 
 def resolve_path(source_path):
-    """
-    Adapte le chemin renvoyé par MLflow (qui est un chemin Docker absolu)
-    pour qu'il fonctionne sur le Mac si nécessaire.
-    """
-    # Nettoyage du préfixe file:// si présent
+    """Corrige le chemin entre Docker et Mac"""
     if source_path.startswith("file://"):
         source_path = source_path[7:]
-    
     path_obj = Path(source_path)
-
-    # Cas 1 : Le chemin existe (On est dans Docker ou le dossier est bien à la racine)
-    if path_obj.exists():
-        return str(path_obj)
+    if path_obj.exists(): return str(path_obj)
     
-    # Cas 2 : On est sur Mac, et le chemin commence par /mlartifacts
-    # On remplace /mlartifacts par le vrai chemin local
+    # Tentative de correction si on est sur Mac
     if str(path_obj).startswith("/mlartifacts"):
-        # On enlève "/mlartifacts" du début et on colle le reste à notre dossier local
         relative_part = str(path_obj).replace("/mlartifacts", "", 1).lstrip("/")
         corrected_path = LOCAL_ARTIFACTS_DIR / relative_part
-        
         if corrected_path.exists():
-            print(f"🔧 Chemin corrigé (Docker -> Mac) : {corrected_path}")
             return str(corrected_path)
-            
-    # Si on ne trouve rien, on renvoie l'original et ça plantera probablement
     return source_path
 
 def get_latest_model():
     model_name = "FaceFilterModel"
-    print(f"Recherche du modèle '{model_name}' sur {MLFLOW_URI}...")
-    
+    print(f"Recherche du modèle '{model_name}'...")
     client = mlflow.tracking.MlflowClient()
+    
     try:
         versions = client.search_model_versions(f"name='{model_name}'")
     except Exception as e:
@@ -113,35 +102,23 @@ def get_latest_model():
         return None
 
     if not versions:
-        print(f"❌ Aucun modèle '{model_name}' trouvé.")
+        print(f"❌ Aucun modèle trouvé.")
         return None
 
-    # Version la plus récente
     latest = sorted(versions, key=lambda x: int(x.version), reverse=True)[0]
     print(f"✅ Version trouvée : {latest.version}")
     
-    # --- CORRECTION DU CHARGEMENT ---
-    # Au lieu de laisser load_model télécharger aveuglément, on récupère le chemin source
-    source_path = latest.source
-    
-    # On applique notre correctif de chemin
-    local_path = resolve_path(source_path)
-    
-    print(f"📂 Chargement depuis : {local_path}")
-    
+    local_path = resolve_path(latest.source)
     device = torch.device("cpu")
-    # On charge directement depuis le dossier local corrigé
     model = mlflow.pytorch.load_model(local_path, map_location=device)
     model.eval()
     return model
 
 def run_prediction(prefix="s8"):
-    print(f"--- Démarrage Batch Prediction ---")
-    print(f"Filtre : '{prefix}'")
+    print(f"--- Batch Prediction ({prefix}) ---")
     
     model = get_latest_model()
-    if model is None:
-        return
+    if model is None: return
 
     transform = transforms.Compose([
         transforms.Resize((64, 64)),
@@ -149,18 +126,22 @@ def run_prediction(prefix="s8"):
         transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
     ])
 
+    # 1. Récupérer et TRIER les fichiers (s2_00000 avant s2_00001)
     if not IMG_DIR.exists():
         print(f"❌ Dossier introuvable : {IMG_DIR}")
         return
 
-    # Recherche des images
-    files = [f for f in IMG_DIR.glob(f"{prefix}*") if f.suffix.lower() in ['.jpg', '.png', '.jpeg']]
+    # On utilise un tri alphabétique simple sur le nom de fichier
+    files = sorted(
+        [f for f in IMG_DIR.glob(f"{prefix}*") if f.suffix.lower() in ['.jpg', '.png', '.jpeg']],
+        key=lambda x: x.name
+    )
     
     if not files:
-        print(f"⚠️ Aucune image trouvée commençant par '{prefix}' dans {IMG_DIR}")
+        print(f"⚠️ Aucune image trouvée pour '{prefix}'")
         return
     
-    print(f"📸 {len(files)} images trouvées.")
+    print(f"📸 {len(files)} images à traiter.")
 
     results = []
     with torch.no_grad():
@@ -170,30 +151,49 @@ def run_prediction(prefix="s8"):
                 input_tensor = transform(img).unsqueeze(0)
                 outputs = model(input_tensor)
                 
-                has_beard = torch.sigmoid(outputs[0]).item() > 0.5
-                has_mustache = torch.sigmoid(outputs[1]).item() > 0.5
-                has_glasses = torch.sigmoid(outputs[2]).item() > 0.5
-                hair_len_idx = torch.argmax(outputs[3], dim=1).item()
-                hair_col_idx = torch.argmax(outputs[4], dim=1).item()
+                # --- Récupération des valeurs ---
+                # Binaires (0 ou 1)
+                val_barbe = 1 if torch.sigmoid(outputs[0]).item() > 0.5 else 0
+                val_moustache = 1 if torch.sigmoid(outputs[1]).item() > 0.5 else 0
+                val_lunettes = 1 if torch.sigmoid(outputs[2]).item() > 0.5 else 0
+                
+                # Multi-classes (Indices bruts du modèle)
+                raw_taille = torch.argmax(outputs[3], dim=1).item()
+                raw_couleur = torch.argmax(outputs[4], dim=1).item()
+                
+                # --- Mapping vers format utilisateur ---
+                final_taille = MAP_TAILLE_TO_USER.get(raw_taille, 0)
+                final_couleur = MAP_COULEUR_TO_USER.get(raw_couleur, 0)
                 
                 results.append({
-                    "filename": filepath.name,
-                    "barbe": has_beard,
-                    "moustache": has_mustache,
-                    "lunettes": has_glasses,
-                    "cheveux_taille": HAIR_LENGTH_MAP.get(hair_len_idx, "Inconnu"),
-                    "cheveux_couleur": HAIR_COLOR_MAP.get(hair_col_idx, "Inconnu")
+                    "image_name": filepath.name, # Nom exact demandé
+                    "barbe": val_barbe,
+                    "moustache": val_moustache,
+                    "lunettes": val_lunettes,
+                    "taille_cheveux": final_taille,
+                    "couleur_cheveux": final_couleur
                 })
             except Exception as e:
                 print(f"Erreur sur {filepath.name}: {e}")
 
+    # 2. Sauvegarde CSV
     OUTPUT_DIR.mkdir(exist_ok=True, parents=True)
     csv_path = OUTPUT_DIR / f"predictions_{prefix}.csv"
-    pd.DataFrame(results).to_csv(csv_path, index=False)
-    print(f"✅ Sauvegardé : {csv_path}")
+    
+    # Création DataFrame avec ordre des colonnes FORCÉ
+    cols_order = ["image_name", "barbe", "moustache", "lunettes", "taille_cheveux", "couleur_cheveux"]
+    df = pd.DataFrame(results)
+    
+    # Sécurité si le DataFrame est vide
+    if not df.empty:
+        df = df[cols_order]
+        df.to_csv(csv_path, index=False)
+        print(f"✅ Sauvegardé : {csv_path}")
+    else:
+        print("⚠️ Aucune prédiction réussie.")
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--prefix", type=str, default="s4")
+    parser.add_argument("--prefix", type=str, default="s8")
     args = parser.parse_args()
     run_prediction(prefix=args.prefix)

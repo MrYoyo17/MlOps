@@ -9,11 +9,41 @@ from flask import Flask, request, jsonify
 import mlflow.pytorch
 import mlflow.tracking
 
-sys.modules['train'] = sys.modules[__name__]
-
 app = Flask(__name__)
 
-# --- 1. DÉFINITION DE LA CLASSE (OBLIGATOIRE POUR LE CHARGEMENT) ---
+# === 1. MAPPINGS (Identiques au script batch) ===
+
+# Rappel de la logique d'agrégation (Modèle) : 0=Long, 1=Court, 2=Chauve
+# Rappel de la demande utilisateur : 0=Chauve, 1=Court, 2=Long
+
+# Conversion Index Modèle -> Code Utilisateur
+MAP_TAILLE_MODEL_TO_USER = {
+    0: 2, # Modèle Long -> User Long (2)
+    1: 1, # Modèle Court -> User Court (1)
+    2: 0  # Modèle Chauve -> User Chauve (0)
+}
+
+# Labels pour l'affichage dans l'interface Web (basé sur le Code Utilisateur)
+LABEL_TAILLE = {
+    0: "Chauve",
+    1: "Court", 
+    2: "Long"
+}
+
+LABEL_COULEUR = {
+    0: "Blond", 
+    1: "Chatain", 
+    2: "Roux", 
+    3: "Brun", 
+    4: "Gris/Bleu"
+}
+
+# === 2. HACK POUR L'IMPORT (Pickle Error) ===
+# Redirige 'trainning' et 'train' vers ce script pour trouver la classe CNN
+sys.modules['trainning'] = sys.modules[__name__]
+sys.modules['train'] = sys.modules[__name__]
+
+# === 3. DÉFINITION DU MODÈLE (Classe CNN) ===
 class CNN(nn.Module):
     def __init__(self):
         super().__init__()
@@ -24,18 +54,10 @@ class CNN(nn.Module):
             nn.Conv2d(16,32,3,padding=1), nn.ReLU(),
             nn.MaxPool2d(2)
         )
-        
-        # Input 64x64 -> 32*16*16 features
-        self.common_fc = nn.Sequential(
-            nn.Linear(32*16*16, 256), nn.ReLU(),
-        )
-
-        # Têtes Binaires
+        self.common_fc = nn.Sequential(nn.Linear(32*16*16, 256), nn.ReLU())
         self.classifier_barbe = nn.Sequential(nn.Linear(256, 64), nn.ReLU(), nn.Linear(64, 1))
         self.classifier_moustache = nn.Sequential(nn.Linear(256, 64), nn.ReLU(), nn.Linear(64, 1))
         self.classifier_lunettes = nn.Sequential(nn.Linear(256, 64), nn.ReLU(), nn.Linear(64, 1))
-        
-        # Branche "Cheveux"
         self.classifier_cheveux_features = nn.Sequential(nn.Linear(256, 128), nn.ReLU())
         self.classifier_taille_cheveux = nn.Sequential(nn.Linear(128, 64), nn.ReLU(), nn.Linear(64, 3))
         self.classifier_couleur_cheveux = nn.Sequential(nn.Linear(128, 64), nn.ReLU(), nn.Linear(64, 5))
@@ -44,60 +66,66 @@ class CNN(nn.Module):
         x = self.conv(x)
         x = x.view(x.size(0), -1)
         common_features = self.common_fc(x)
-
-        out_barbe = self.classifier_barbe(common_features)
-        out_moustache = self.classifier_moustache(common_features)
-        out_lunettes = self.classifier_lunettes(common_features)
-        
         cheveux_features = self.classifier_cheveux_features(common_features)
-        out_taille_cheveux = self.classifier_taille_cheveux(cheveux_features)
-        out_couleur_cheveux = self.classifier_couleur_cheveux(cheveux_features)
+        return [
+            self.classifier_barbe(common_features),
+            self.classifier_moustache(common_features),
+            self.classifier_lunettes(common_features),
+            self.classifier_taille_cheveux(cheveux_features),
+            self.classifier_couleur_cheveux(cheveux_features)
+        ]
 
-        return [out_barbe, out_moustache, out_lunettes, out_taille_cheveux, out_couleur_cheveux]
+# === 4. CONFIGURATION ET CHARGEMENT ===
 
-# --- 2. CONFIGURATION ET CHARGEMENT DU MODÈLE ---
-
-# Mapping des index vers des noms lisibles (A ADAPTER SELON VOTRE DATASET)
-HAIR_LENGTH_MAP = {0: "Court", 1: "Mi-long", 2: "Long"}
-HAIR_COLOR_MAP = {0: "Noir", 1: "Brun", 2: "Blond", 3: "Roux", 4: "Gris/Autre"}
-
-# Configuration MLflow
-mlflow_uri = os.environ.get("MLFLOW_TRACKING_URI", "http://mlflow:5000")
-mlflow.set_tracking_uri(mlflow_uri)
-
+MLFLOW_URI = os.environ.get("MLFLOW_TRACKING_URI", "http://mlflow:5000")
+mlflow.set_tracking_uri(MLFLOW_URI)
 model = None
-device = torch.device("cpu") # On utilise le CPU pour l'inférence simple de l'API
+device = torch.device("cpu")
+
+def resolve_path(source_path):
+    """Corrige le chemin entre Docker et Mac si nécessaire"""
+    if source_path.startswith("file://"):
+        source_path = source_path[7:]
+    
+    path_obj = os.path.normpath(source_path)
+    
+    # Si le chemin existe tel quel (Docker), on le garde
+    if os.path.exists(path_obj):
+        return path_obj
+    
+    # Si on est en local et que le chemin commence par /mlartifacts
+    # On suppose que le volume est monté ou accessible localement
+    # (Dans l'App Docker, le volume EST monté dans /mlartifacts, donc le cas 1 suffit généralement)
+    # Cette sécurité est surtout utile si vous lancez app.py hors docker.
+    return path_obj
 
 def load_production_model():
     global model
     try:
-        model_name = "FaceFilterModel" # Le nom donné dans train.py lors du log
-        # On essaie de charger la version en "Production", sinon la dernière version ("None")
-        print(f"Connexion à MLflow ({mlflow_uri})...")
-        # Note: Si vous n'avez pas encore taggé de modèle en production, mettez `alias="latest"` ou une version spécifique
+        model_name = "FaceFilterModel"
+        print(f"Connexion à MLflow ({MLFLOW_URI})...")
         client = mlflow.tracking.MlflowClient()
         versions = client.search_model_versions(f"name='{model_name}'")
         
         if not versions:
-            print(f"ERREUR: Aucun modèle nommé '{model_name}' trouvé dans MLflow.")
+            print(f"❌ Aucun modèle '{model_name}' trouvé.")
             return
 
-        # On trie pour avoir la dernière version créée
-        latest_version = sorted(versions, key=lambda x: x.version, reverse=True)[0]
-        version_id = latest_version.version
-        model_uri = f"models:/{model_name}/{version_id}" # Charge la dernière version
+        latest = sorted(versions, key=lambda x: int(x.version), reverse=True)[0]
+        print(f"Chargement version {latest.version}...")
         
-        print(f"Chargement du modèle depuis {model_uri} avec la version {version_id}...")
-        model = mlflow.pytorch.load_model(model_uri, map_location=device)
+        # Récupération et correction du chemin
+        local_path = resolve_path(latest.source)
+        
+        model = mlflow.pytorch.load_model(local_path, map_location=device)
         model.eval()
-        print("Modèle chargé avec succès !")
+        print("✅ Modèle chargé !")
     except Exception as e:
-        print(f"ERREUR lors du chargement du modèle : {e}")
-        print("L'API démarrera mais les prédictions échoueront tant que le modèle n'est pas dispo.")
+        print(f"❌ ERREUR chargement modèle : {e}")
 
-# --- 3. PRÉ-TRAITEMENT ---
-# Doit être IDENTIQUE à l'entraînement (+ Resize obligatoire)
+# === 5. PRÉ-TRAITEMENT ===
 transform_pipeline = transforms.Compose([
+    transforms.Resize((64, 64)),
     transforms.ToTensor(),
     transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
 ])
@@ -105,18 +133,26 @@ transform_pipeline = transforms.Compose([
 def process_image(image_bytes):
     image = Image.open(io.BytesIO(image_bytes)).convert('RGB')
     tensor = transform_pipeline(image)
-    return tensor.unsqueeze(0) # Ajoute la dimension batch [1, 3, 64, 64]
+    return tensor.unsqueeze(0)
 
-# --- 4. ROUTES API ---
+# === 6. ROUTES API ===
+
 @app.route('/', methods=['GET'])
 def index():
     return """
     <!doctype html>
-    <title>Test Face Filter</title>
-    <h1>Envoyer une photo pour obtenir la prédiction</h1>
+    <style>
+        body { font-family: sans-serif; text-align: center; padding: 50px; }
+        form { margin-top: 20px; }
+        input[type=file] { padding: 10px; border: 1px dashed #aaa; }
+        input[type=submit] { background: #007bff; color: white; border: none; padding: 10px 20px; cursor: pointer; }
+    </style>
+    <h1>Face Filter API</h1>
+    <p>Chargez une image pour tester le modèle (Mapping v2)</p>
     <form action="/predict" method="post" enctype="multipart/form-data">
-      <input type="file" name="file" accept="image/*">
-      <input type="submit" value="Analyser">
+      <input type="file" name="file" accept="image/*" required>
+      <br><br>
+      <input type="submit" value="Analyser l'image">
     </form>
     """
 
@@ -127,13 +163,12 @@ def health():
 @app.route('/predict', methods=['POST'])
 def predict():
     if model is None:
-        # Tentative de rechargement si échec au démarrage
         load_production_model()
         if model is None:
-            return jsonify({"error": "Modèle non disponible"}), 503
+            return jsonify({"error": "Modèle indisponible"}), 503
 
     if 'file' not in request.files:
-        return jsonify({"error": "Aucun fichier envoyé"}), 400
+        return jsonify({"error": "Fichier manquant"}), 400
     
     file = request.files['file']
     
@@ -142,25 +177,37 @@ def predict():
         
         with torch.no_grad():
             outputs = model(input_tensor)
-            # Rappel de l'ordre : [barbe, moustache, lunettes, taille, couleur]
             
-            # Traitement Binaires (Sigmoid > 0.5)
-            has_beard = torch.sigmoid(outputs[0]).item() > 0.5
-            has_mustache = torch.sigmoid(outputs[1]).item() > 0.5
-            has_glasses = torch.sigmoid(outputs[2]).item() > 0.5
+            # --- 1. Binaires (0:Non, 1:Oui) ---
+            val_barbe = 1 if torch.sigmoid(outputs[0]).item() > 0.5 else 0
+            val_moustache = 1 if torch.sigmoid(outputs[1]).item() > 0.5 else 0
+            val_lunettes = 1 if torch.sigmoid(outputs[2]).item() > 0.5 else 0
             
-            # Traitement Multi-classes (Argmax)
-            hair_len_idx = torch.argmax(outputs[3], dim=1).item()
-            hair_col_idx = torch.argmax(outputs[4], dim=1).item()
+            # --- 2. Multi-classes (Raw Index) ---
+            raw_taille = torch.argmax(outputs[3], dim=1).item()
+            raw_couleur = torch.argmax(outputs[4], dim=1).item()
 
+            # --- 3. Mapping (Model -> User) ---
+            # Taille: 0=Chauve, 1=Court, 2=Long
+            user_taille_code = MAP_TAILLE_MODEL_TO_USER.get(raw_taille, 0)
+            
+            # Couleur: 0=Blond, 1=Chatain, 2=Roux, 3=Brun, 4=Gris
+            user_couleur_code = raw_couleur # Pas de changement d'index (1:1)
+
+        # Réponse JSON complète
         response = {
-            "beard": has_beard,
-            "mustache": has_mustache,
-            "glasses": has_glasses,
-            "hair_length": HAIR_LENGTH_MAP.get(hair_len_idx, "Inconnu"),
-            "hair_color": HAIR_COLOR_MAP.get(hair_col_idx, "Inconnu"),
-            # On renvoie aussi les indices bruts pour le débogage
-            "debug_indices": {"length": hair_len_idx, "color": hair_col_idx}
+            "prediction": {
+                "barbe": val_barbe,
+                "moustache": val_moustache,
+                "lunettes": val_lunettes,
+                "taille_cheveux": user_taille_code,
+                "couleur_cheveux": user_couleur_code
+            },
+            "labels": {
+                "taille": LABEL_TAILLE.get(user_taille_code, "Inconnu"),
+                "couleur": LABEL_COULEUR.get(user_couleur_code, "Inconnu")
+            },
+            "image_name": file.filename
         }
         return jsonify(response)
 
@@ -168,6 +215,5 @@ def predict():
         return jsonify({"error": str(e)}), 500
 
 if __name__ == '__main__':
-    # Charger le modèle au démarrage
     load_production_model()
-    app.run(host='0.0.0.0', port=5002)
+    app.run(host='0.0.0.0', port=5001)
