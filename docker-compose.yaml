@@ -1,0 +1,66 @@
+services:
+  # Base de données partagée (Postgres)
+  postgres:
+    image: postgres:13
+    environment:
+      - POSTGRES_USER=user
+      - POSTGRES_PASSWORD=password
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./init_db.sql:/docker-entrypoint-initdb.d/init_db.sql
+
+  # Serveur de Tracking MLflow
+  mlflow:
+    build: ./mlflow_custom
+    command: >
+      mlflow server
+      --backend-store-uri postgresql://user:password@postgres:5432/mlflow_db
+      --default-artifact-root /mlartifacts
+      --host 0.0.0.0
+    ports:
+      - "5050:5000"
+    volumes:
+      - ./ml-artifacts:/mlartifacts
+    depends_on:
+      - postgres
+
+  # Airflow Webserver & Scheduler (Simplifié en un service pour l'exemple)
+  airflow:
+    build: ./airflow  # On construit une image custom pour avoir pandas/sklearn/etc.
+    restart: always
+    command: airflow standalone
+    environment:
+      - AIRFLOW__CORE__EXECUTOR=LocalExecutor
+      - AIRFLOW__DATABASE__SQL_ALCHEMY_CONN=postgresql+psycopg2://user:password@postgres/airflow_db
+      - AIRFLOW__CORE__LOAD_EXAMPLES=False
+      # Variables pour que vos scripts trouvent MLflow
+      - MLFLOW_TRACKING_URI=http://mlflow:5000
+    volumes:
+      - ./airflow/dags:/opt/airflow/dags
+      - ./ml_scripts:/opt/airflow/ml_scripts
+      - ./data:/opt/airflow/data
+      - ./ml-artifacts:/mlartifacts
+    ports:
+      - "8080:8080"
+    depends_on:
+      - postgres
+      - mlflow
+  
+  face-filter-app:
+    build: ./app
+    ports:
+      - "5002:5002"
+    environment:
+      # L'app doit savoir où est MLflow pour télécharger le modèle
+      - MLFLOW_TRACKING_URI=http://mlflow:5000
+      - FLASK_DEBUG=1
+    volumes:
+      - ./ml-artifacts:/mlartifacts
+      - ./app:/app
+    depends_on:
+      - mlflow
+
+volumes:
+  postgres_data:

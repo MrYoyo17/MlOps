@@ -1,0 +1,46 @@
+# venv files
+venv/
+env/
+*.venv
+*.env
+
+# data
+data/
+*.png
+*.csv
+*.sql
+
+# Python cache files
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Jupyter Notebook checkpoints
+.ipynb_checkpoints/
+
+# MLflow artifacts
+ml-artifacts/
+
+# Airflow logs
+airflow/logs/
+
+# Docker files
+docker-compose.override.yaml
+
+# VSCode settings
+.vscode/
+.idea/
+
+# MacOS files
+.DS_Store
+Thumbs.db
+
+# Logs
+logs/
+*.log
+
+# Temporary files
+tmp/
+temp/
+
