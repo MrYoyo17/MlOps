@@ -51,7 +51,12 @@ with DAG('mlops_face_filter', default_args=default_args, schedule_interval=None,
         python_callable=run_training
     )
 
-    [t_annotate, t_preprocess] >> t_train
+    t_predict = PythonOperator(
+        task_id='batch_predict',
+        python_callable=run_prediction(prefix='s') # Prédiction sur toutes les images
+    )
+
+    [t_annotate, t_preprocess] >> t_train >> t_predict
 
 with DAG('mlops_face_filter_train', default_args=default_args, schedule_interval=None, catchup=False) as dag:
     
