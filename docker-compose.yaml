@@ -37,6 +37,10 @@ services:
       - AIRFLOW__CORE__LOAD_EXAMPLES=False
       # Variables pour que vos scripts trouvent MLflow
       - MLFLOW_TRACKING_URI=http://mlflow:5000
+      - AIRFLOW__METRICS__STATSD_ON=True
+      - AIRFLOW__METRICS__STATSD_HOST=airflow-statsd-exporter
+      - AIRFLOW__METRICS__STATSD_PORT=9125
+      - AIRFLOW__METRICS__STATSD_PREFIX=airflow
     volumes:
       - ./airflow/dags:/opt/airflow/dags
       - ./ml_scripts:/opt/airflow/ml_scripts
@@ -47,6 +51,7 @@ services:
     depends_on:
       - postgres
       - mlflow
+      - statsd-exporter
   
   face-filter-app:
     build:
@@ -119,6 +124,16 @@ services:
       - /var/lib/docker/:/var/lib/docker:ro
     devices:
       - /dev/kmsg
+
+  statsd-exporter:
+    image: prom/statsd-exporter
+    container_name: airflow-statsd-exporter
+    command: "--statsd.mapping-config=/tmp/statsd_mapping.yml"
+    ports:
+      - "9102:9102" # Pour Prometheus
+      - "8125:9125/udp" # Pour recevoir d'Airflow
+    volumes:
+      - ./monitoring/statsd_mapping.yml:/tmp/statsd_mapping.yml
 
 volumes:
   postgres_data:
