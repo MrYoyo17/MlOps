@@ -95,11 +95,14 @@ services:
     ports:
       - "3000:3000"
     environment:
-      - GF_SECURITY_ADMIN_PASSWORD=admin # Mot de passe par défaut
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH=/var/lib/grafana/dashboards/mlops_dashboard.json
     depends_on:
       - prometheus
     volumes:
       - grafana_data:/var/lib/grafana
+      - ./monitoring/provisioning:/etc/grafana/provisioning
+      - ./monitoring/dashboards:/var/lib/grafana/dashboards
 
   # 3. cAdvisor (Moniteur de conteneurs Docker)
   # Note : Sur Mac M1/M2, l'image google/cadvisor plante souvent.

@@ -1,0 +1,10 @@
+apiVersion: 1
+providers:
+  - name: 'MLOps Dashboards'
+    orgId: 1
+    folder: ''
+    type: file
+    disableDeletion: false
+    updateIntervalSeconds: 10 # Met à jour le dashboard si tu modifies le JSON sans redémarrer
+    options:
+      path: /var/lib/grafana/dashboards # Chemin INTERNE au conteneur (voir étape 5)
