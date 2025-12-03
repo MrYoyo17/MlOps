@@ -6,7 +6,7 @@ from flask_cors import CORS
 from prometheus_flask_exporter import PrometheusMetrics
 from prometheus_client import Gauge, Counter
 
-DATA_DIR = os.environ.get("DATA_DIR", "/data")
+DATA_DIR = os.environ.get("DATA_DIR", "/app/data")
 PREDICTIONS_DIR = os.path.join(DATA_DIR, "predictions")
 PREDICTIONS_DF = None
 

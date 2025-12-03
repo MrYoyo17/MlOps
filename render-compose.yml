@@ -1,6 +1,6 @@
 services:
-  face-filter-app:
-    image: mlops-face-filter-app:latest
+  back:
+    image: mlops-back:latest
     build:
       context: .
       dockerfile: app/Dockerfile
@@ -12,7 +12,7 @@ services:
     volumes:
       - ./ml-artifacts:/mlartifacts
       - ./app:/app
-      - ./data:/data
+      - ./data:/app/data
 
   front:
     image: mlops-front:latest
