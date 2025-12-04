@@ -67,7 +67,7 @@ services:
     volumes:
       - ./ml-artifacts:/mlartifacts
       - ./app:/app
-      - ./data:/app/data
+      - ./data:/data
     depends_on:
       - mlflow
 
