@@ -9,6 +9,7 @@ data/
 *.png
 *.csv
 csv_global.sql
+*.tar
 
 # Python cache files
 __pycache__/
